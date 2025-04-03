@@ -135,7 +135,7 @@ systemctl restart tftpd-hpa
 echo "[+] Downloading Debian Live ISO (XFCE 12.5.0)"
 mkdir -p /mnt/iso /var/www/html/debian/live /srv/tftp/debian
 if [ ! -f "~/debian.iso" ]; then
-  wget -O ~/debian.iso https://cdimage.debian.org/cdimage/archive/12.5.0-live/amd64/iso-hybrid/debian-live-12.5.0-amd64-xfce.iso
+  wget -O ~/debian.iso https://cdimage.debian.org/debian-cd/current-live/amd64/iso-hybrid/debian-live-12.10.0-amd64-standard.iso
 else
   echo " Debian ISO already downloaded. Skipping."
 fi
