@@ -2,12 +2,18 @@
 # PXE Server Setup Script for Ubuntu 24.04.5 with Legacy BIOS + UEFI Support
 # Author: CubenSquare
 # Purpose: Setup PXE Server with TFTP, DHCP, NFS and Debian ISO (Legacy & UEFI)
-# Switch to root and run the script
-# Script also includes checking of internet and assigning a static ip address
 
 set -e
 
-# === 0. Check Internet ===
+# === 0. PXE Server Configuration ===
+PXE_IP="172.16.4.58"
+PXE_GATEWAY="172.16.4.1"
+PXE_NET="172.16.4.0"
+PXE_NETMASK="255.255.255.0"
+PXE_RANGE_START="172.16.4.100"
+PXE_RANGE_END="172.16.4.200"
+
+# === 1. Check Internet ===
 echo "[+] Validating internet connectivity"
 if ping -c 2 8.8.8.8 >/dev/null; then
   echo "Internet is working."
@@ -16,8 +22,7 @@ else
   exit 1
 fi
 
-# === 1. Configure Static IP (Optional) ===
-PXE_IP="192.168.68.101"
+# === 2. Configure Static IP ===
 INTERFACE="$(ip -o -4 route show to default | awk '{print $5}' | head -1)"
 NETPLAN_FILE="/etc/netplan/00-pxe.yaml"
 
@@ -31,7 +36,7 @@ network:
     $INTERFACE:
       dhcp4: no
       addresses: [${PXE_IP}/24]
-      gateway4: 192.168.68.1
+      gateway4: $PXE_GATEWAY
       nameservers:
         addresses: [8.8.8.8, 1.1.1.1]
 EOF
@@ -41,12 +46,12 @@ else
   echo " Netplan config already exists. Skipping static IP setup."
 fi
 
-# === 2. Install required packages ===
+# === 3. Install required packages ===
 echo "[+] Installing required packages"
 apt update
 apt install -y isc-dhcp-server tftpd-hpa nfs-kernel-server apache2 syslinux-common pxelinux isolinux wget curl xorriso grub-efi-amd64-bin
 
-# === 3. Configure DHCP ===
+# === 4. Configure DHCP ===
 echo "[+] Configuring DHCP server"
 DHCP_CONF="/etc/dhcp/dhcpd.conf"
 if ! grep -q "pxelinux.0" $DHCP_CONF; then
@@ -57,9 +62,9 @@ default-lease-time 600;
 max-lease-time 7200;
 log-facility local7;
 
-subnet 192.168.68.0 netmask 255.255.255.0 {
-  range 192.168.68.150 192.168.68.200;
-  option routers 192.168.68.1;
+subnet $PXE_NET netmask $PXE_NETMASK {
+  range $PXE_RANGE_START $PXE_RANGE_END;
+  option routers $PXE_GATEWAY;
   if exists user-class and option user-class = "iPXE" {
     filename "http://$PXE_IP/ipxe.efi";
   } else if option arch = 00:07 {
@@ -78,16 +83,14 @@ fi
 systemctl enable isc-dhcp-server
 systemctl restart isc-dhcp-server
 
-# === 4. Configure TFTP ===
+# === 5. Configure TFTP ===
 echo "[+] Configuring TFTP server"
 mkdir -p /srv/tftp/pxelinux.cfg /srv/tftp/EFI/BOOT
 cp -u /usr/lib/PXELINUX/pxelinux.0 /srv/tftp/
 cp -u /usr/lib/syslinux/modules/bios/{ldlinux.c32,menu.c32,libcom32.c32,libutil.c32} /srv/tftp/
-
-# Copy GRUB EFI binary
 cp -u /usr/lib/grub/x86_64-efi-signed/grubnetx64.efi.signed /srv/tftp/EFI/BOOT/
 
-# Create PXE (BIOS) Menu
+# === 6. Create PXE BIOS Menu ===
 PXE_MENU="/srv/tftp/pxelinux.cfg/default"
 if [ ! -f "$PXE_MENU" ]; then
 cat <<EOF | tee $PXE_MENU
@@ -108,7 +111,7 @@ else
   echo " PXE BIOS menu already exists."
 fi
 
-# Create GRUB config for UEFI
+# === 7. Create GRUB config for UEFI ===
 GRUB_CFG="/srv/tftp/boot/grub/grub.cfg"
 mkdir -p /srv/tftp/boot/grub
 cat <<EOF | tee $GRUB_CFG
@@ -121,7 +124,7 @@ menuentry "Debian Live XFCE" {
 }
 EOF
 
-# === 5. Configure TFTP server path ===
+# === 8. Configure TFTP server path ===
 cat <<EOF | tee /etc/default/tftpd-hpa
 TFTP_USERNAME="tftp"
 TFTP_DIRECTORY="/srv/tftp"
@@ -131,7 +134,7 @@ EOF
 
 systemctl restart tftpd-hpa
 
-# === 6. Download Debian ISO ===
+# === 9. Download Debian ISO ===
 echo "[+] Downloading Debian Live ISO (XFCE 12.5.0)"
 mkdir -p /mnt/iso /var/www/html/debian/live /srv/tftp/debian
 if [ ! -f "~/debian.iso" ]; then
@@ -140,7 +143,7 @@ else
   echo " Debian ISO already downloaded. Skipping."
 fi
 
-# === 7. Mount and Extract ISO ===
+# === 10. Mount and Extract ISO ===
 echo "[+] Mounting and extracting ISO contents"
 mount -o loop ~/debian.iso /mnt/iso
 cp -u /mnt/iso/live/initrd.img /srv/tftp/debian/
@@ -148,7 +151,7 @@ cp -u /mnt/iso/live/vmlinuz /srv/tftp/debian/
 cp -u /mnt/iso/live/filesystem.squashfs /var/www/html/debian/live/
 umount /mnt/iso
 
-# === 8. Configure NFS for additional use ===
+# === 11. Configure NFS ===
 if ! grep -q "/var/www/html/debian" /etc/exports; then
 cat <<EOF | tee -a /etc/exports
 /var/www/html/debian *(ro,sync,no_subtree_check)
@@ -161,10 +164,10 @@ fi
 
 systemctl restart nfs-kernel-server
 
-# === 9. Restart Apache ===
+# === 12. Restart Apache ===
 systemctl restart apache2
 
-# === 10. Done ===
+# === 13. Done ===
 echo " PXE Server setup complete. BIOS & UEFI clients can now boot Debian Live from network."
 echo " PXE Server IP: $PXE_IP | Interface: $INTERFACE"
 echo " Clients should be set to Network Boot (Legacy BIOS or UEFI)"
