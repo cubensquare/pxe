@@ -22,7 +22,11 @@ INTERFACE="$(ip -o -4 route show to default | awk '{print $5}' | head -1)"
 NETPLAN_FILE="/etc/netplan/00-pxe.yaml"
 
 echo "[+] Setting static IP for PXE server"
-if [ ! -f "$NETPLAN_FILE" ]; then
+if [ -f "$NETPLAN_FILE" ]; then
+  echo "[!] Existing Netplan file found. Replacing..."
+  rm -f "$NETPLAN_FILE"
+fi
+
 cat <<EOF | tee $NETPLAN_FILE
 network:
   version: 2
@@ -35,11 +39,9 @@ network:
       nameservers:
         addresses: [8.8.8.8, 1.1.1.1]
 EOF
-  netplan apply
-  echo " Static IP set to $PXE_IP"
-else
-  echo " Netplan config exists. Skipping static IP setup."
-fi
+
+netplan apply
+echo " Static IP set to $PXE_IP"
 
 # === 3. Install packages ===
 echo "[+] Installing PXE components"
@@ -48,6 +50,11 @@ apt install -y isc-dhcp-server tftpd-hpa apache2 nfs-kernel-server syslinux-comm
 
 # === 4. DHCP Config (Legacy BIOS Only) ===
 DHCP_CONF="/etc/dhcp/dhcpd.conf"
+if [ -f "$DHCP_CONF" ]; then
+  echo "[!] Removing existing $DHCP_CONF"
+  rm -f "$DHCP_CONF"
+fi
+
 cat <<EOF | tee $DHCP_CONF
 option domain-name "pxe.local";
 option domain-name-servers 8.8.8.8;
@@ -63,7 +70,14 @@ subnet $PXE_NET netmask $PXE_NETMASK {
 }
 EOF
 
-echo "INTERFACESv4=\"$INTERFACE\"" | tee /etc/default/isc-dhcp-server
+ISC_DEFAULT="/etc/default/isc-dhcp-server"
+if [ -f "$ISC_DEFAULT" ]; then
+  echo "[!] Removing existing $ISC_DEFAULT"
+  rm -f "$ISC_DEFAULT"
+fi
+
+echo "INTERFACESv4=\"$INTERFACE\"" | tee $ISC_DEFAULT
+
 systemctl enable isc-dhcp-server
 systemctl restart isc-dhcp-server
 
@@ -74,7 +88,13 @@ cp -u /usr/lib/PXELINUX/pxelinux.0 /srv/tftp/
 cp -u /usr/lib/syslinux/modules/bios/{ldlinux.c32,menu.c32,libcom32.c32,libutil.c32} /srv/tftp/
 
 # === 6. Create PXE Boot Menu ===
-cat <<EOF | tee /srv/tftp/pxelinux.cfg/default
+PXE_MENU="/srv/tftp/pxelinux.cfg/default"
+if [ -f "$PXE_MENU" ]; then
+  echo "[!] Removing existing PXE menu"
+  rm -f "$PXE_MENU"
+fi
+
+cat <<EOF | tee $PXE_MENU
 DEFAULT menu.c32
 PROMPT 0
 TIMEOUT 50
@@ -89,7 +109,13 @@ LABEL Debian
 EOF
 
 # === 7. Configure TFTP Service ===
-cat <<EOF | tee /etc/default/tftpd-hpa
+TFTP_CONF="/etc/default/tftpd-hpa"
+if [ -f "$TFTP_CONF" ]; then
+  echo "[!] Replacing $TFTP_CONF"
+  rm -f "$TFTP_CONF"
+fi
+
+cat <<EOF | tee $TFTP_CONF
 TFTP_USERNAME="tftp"
 TFTP_DIRECTORY="/srv/tftp"
 TFTP_ADDRESS=":69"
@@ -101,7 +127,11 @@ systemctl restart tftpd-hpa
 # === 8. Download Debian ISO (Live Standard) ===
 echo "[+] Downloading Debian Live ISO"
 mkdir -p /mnt/iso /var/www/html/debian/live
-wget -O ~/debian.iso https://cdimage.debian.org/debian-cd/current-live/amd64/iso-hybrid/debian-live-12.10.0-amd64-standard.iso
+if [ ! -f ~/debian.iso ]; then
+  wget -O ~/debian.iso https://cdimage.debian.org/debian-cd/current-live/amd64/iso-hybrid/debian-live-12.10.0-amd64-standard.iso
+else
+  echo " Debian ISO already exists at ~/debian.iso"
+fi
 
 # === 9. Mount and Extract Boot Files ===
 mount -o loop ~/debian.iso /mnt/iso
