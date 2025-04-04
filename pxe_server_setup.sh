@@ -1,11 +1,11 @@
 #!/bin/bash
-# PXE Server Setup Script for Ubuntu 24.04.5 with Legacy BIOS + UEFI Support
+# PXE Server Setup Script - BIOS Only (Legacy Boot)
 # Author: CubenSquare
-# Purpose: Setup PXE Server with TFTP, DHCP, NFS and Debian ISO (Legacy & UEFI)
+# For Debian Live PXE Boot (Only Legacy BIOS supported)
 
 set -e
 
-# === 0. PXE Server Configuration ===
+# === PXE Network Config ===
 PXE_IP="172.16.4.58"
 PXE_GATEWAY="172.16.4.1"
 PXE_NET="172.16.4.0"
@@ -14,19 +14,14 @@ PXE_RANGE_START="172.16.4.100"
 PXE_RANGE_END="172.16.4.200"
 
 # === 1. Check Internet ===
-echo "[+] Validating internet connectivity"
-if ping -c 2 8.8.8.8 >/dev/null; then
-  echo "Internet is working."
-else
-  echo " Internet not reachable. Please fix your connection and try again."
-  exit 1
-fi
+echo "[+] Checking internet connection"
+ping -c 2 8.8.8.8 >/dev/null || { echo "Internet not reachable. Exiting."; exit 1; }
 
 # === 2. Configure Static IP ===
 INTERFACE="$(ip -o -4 route show to default | awk '{print $5}' | head -1)"
 NETPLAN_FILE="/etc/netplan/00-pxe.yaml"
 
-echo "[+] Setting static IP address for PXE Server"
+echo "[+] Setting static IP for PXE server"
 if [ ! -f "$NETPLAN_FILE" ]; then
 cat <<EOF | tee $NETPLAN_FILE
 network:
@@ -41,20 +36,18 @@ network:
         addresses: [8.8.8.8, 1.1.1.1]
 EOF
   netplan apply
-  echo " Static IP configured as $PXE_IP on $INTERFACE"
+  echo " Static IP set to $PXE_IP"
 else
-  echo " Netplan config already exists. Skipping static IP setup."
+  echo " Netplan config exists. Skipping static IP setup."
 fi
 
-# === 3. Install required packages ===
-echo "[+] Installing required packages"
+# === 3. Install packages ===
+echo "[+] Installing PXE components"
 apt update
-apt install -y isc-dhcp-server tftpd-hpa nfs-kernel-server apache2 syslinux-common pxelinux isolinux wget curl xorriso grub-efi-amd64-bin
+apt install -y isc-dhcp-server tftpd-hpa apache2 nfs-kernel-server syslinux-common pxelinux wget
 
-# === 4. Configure DHCP ===
-echo "[+] Configuring DHCP server"
+# === 4. DHCP Config (Legacy BIOS Only) ===
 DHCP_CONF="/etc/dhcp/dhcpd.conf"
-if ! grep -q "pxelinux.0" $DHCP_CONF; then
 cat <<EOF | tee $DHCP_CONF
 option domain-name "pxe.local";
 option domain-name-servers 8.8.8.8;
@@ -65,35 +58,23 @@ log-facility local7;
 subnet $PXE_NET netmask $PXE_NETMASK {
   range $PXE_RANGE_START $PXE_RANGE_END;
   option routers $PXE_GATEWAY;
-  if exists user-class and option user-class = "iPXE" {
-    filename "http://$PXE_IP/ipxe.efi";
-  } else if option arch = 00:07 {
-    filename "grubnetx64.efi.signed";
-  } else {
-    filename "pxelinux.0";
-  }
+  filename "pxelinux.0";
   next-server $PXE_IP;
 }
 EOF
-  echo " DHCP configuration created."
-else
-  echo " DHCP config already exists. Skipping."
-fi
 
+echo "INTERFACESv4=\"$INTERFACE\"" | tee /etc/default/isc-dhcp-server
 systemctl enable isc-dhcp-server
 systemctl restart isc-dhcp-server
 
-# === 5. Configure TFTP ===
-echo "[+] Configuring TFTP server"
-mkdir -p /srv/tftp/pxelinux.cfg /srv/tftp/EFI/BOOT
+# === 5. TFTP Setup ===
+echo "[+] Setting up TFTP server"
+mkdir -p /srv/tftp/pxelinux.cfg /srv/tftp/debian
 cp -u /usr/lib/PXELINUX/pxelinux.0 /srv/tftp/
 cp -u /usr/lib/syslinux/modules/bios/{ldlinux.c32,menu.c32,libcom32.c32,libutil.c32} /srv/tftp/
-cp -u /usr/lib/grub/x86_64-efi-signed/grubnetx64.efi.signed /srv/tftp/EFI/BOOT/
 
-# === 6. Create PXE BIOS Menu ===
-PXE_MENU="/srv/tftp/pxelinux.cfg/default"
-if [ ! -f "$PXE_MENU" ]; then
-cat <<EOF | tee $PXE_MENU
+# === 6. Create PXE Boot Menu ===
+cat <<EOF | tee /srv/tftp/pxelinux.cfg/default
 DEFAULT menu.c32
 PROMPT 0
 TIMEOUT 50
@@ -106,25 +87,8 @@ LABEL Debian
   KERNEL debian/vmlinuz
   APPEND initrd=debian/initrd.img boot=live components username=user noswap noeject fetch=http://$PXE_IP/debian/live/filesystem.squashfs
 EOF
-  echo " PXE BIOS menu created."
-else
-  echo " PXE BIOS menu already exists."
-fi
 
-# === 7. Create GRUB config for UEFI ===
-GRUB_CFG="/srv/tftp/boot/grub/grub.cfg"
-mkdir -p /srv/tftp/boot/grub
-cat <<EOF | tee $GRUB_CFG
-set timeout=5
-set default=0
-
-menuentry "Debian Live XFCE" {
-  linux /debian/vmlinuz boot=live components username=user noswap noeject fetch=http://$PXE_IP/debian/live/filesystem.squashfs
-  initrd /debian/initrd.img
-}
-EOF
-
-# === 8. Configure TFTP server path ===
+# === 7. Configure TFTP Service ===
 cat <<EOF | tee /etc/default/tftpd-hpa
 TFTP_USERNAME="tftp"
 TFTP_DIRECTORY="/srv/tftp"
@@ -134,40 +98,28 @@ EOF
 
 systemctl restart tftpd-hpa
 
-# === 9. Download Debian ISO ===
-echo "[+] Downloading Debian Live ISO (XFCE 12.5.0)"
-mkdir -p /mnt/iso /var/www/html/debian/live /srv/tftp/debian
-if [ ! -f "~/debian.iso" ]; then
-  wget -O ~/debian.iso https://cdimage.debian.org/cdimage/archive/12.5.0-live/amd64/iso-hybrid/debian-live-12.5.0-amd64-xfce.iso
-else
-  echo " Debian ISO already downloaded. Skipping."
-fi
+# === 8. Download Debian ISO (Live Standard) ===
+echo "[+] Downloading Debian Live ISO"
+mkdir -p /mnt/iso /var/www/html/debian/live
+wget -O ~/debian.iso https://cdimage.debian.org/debian-cd/current-live/amd64/iso-hybrid/debian-live-12.10.0-amd64-standard.iso
 
-# === 10. Mount and Extract ISO ===
-echo "[+] Mounting and extracting ISO contents"
+# === 9. Mount and Extract Boot Files ===
 mount -o loop ~/debian.iso /mnt/iso
 cp -u /mnt/iso/live/initrd.img /srv/tftp/debian/
 cp -u /mnt/iso/live/vmlinuz /srv/tftp/debian/
 cp -u /mnt/iso/live/filesystem.squashfs /var/www/html/debian/live/
 umount /mnt/iso
 
-# === 11. Configure NFS ===
+# === 10. NFS Export (Optional) ===
 if ! grep -q "/var/www/html/debian" /etc/exports; then
-cat <<EOF | tee -a /etc/exports
-/var/www/html/debian *(ro,sync,no_subtree_check)
-EOF
-  exportfs -ra
-  echo " NFS export added."
-else
-  echo " NFS export already exists."
+echo "/var/www/html/debian *(ro,sync,no_subtree_check)" >> /etc/exports
+exportfs -ra
 fi
 
 systemctl restart nfs-kernel-server
-
-# === 12. Restart Apache ===
 systemctl restart apache2
 
-# === 13. Done ===
-echo " PXE Server setup complete. BIOS & UEFI clients can now boot Debian Live from network."
-echo " PXE Server IP: $PXE_IP | Interface: $INTERFACE"
-echo " Clients should be set to Network Boot (Legacy BIOS or UEFI)"
+# === 11. Done ===
+echo "✅ PXE Server setup complete (Legacy BIOS only)"
+echo "📡 PXE IP: $PXE_IP | Interface: $INTERFACE"
+echo "🖥️ Client must be in Legacy/BIOS boot mode"
