@@ -4,7 +4,7 @@
 set -e
 
 PXE_IP="172.16.4.58"
-ISO_PATH="/root/iso-download/debian-secure-v1.iso"
+ISO_PATH="/root/pxe/debian-secure-v1.iso"
 
 echo "[+] Mounting ISO..."
 mkdir -p /mnt/iso
