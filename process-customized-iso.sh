@@ -3,7 +3,7 @@
 # Script to prepare PXE server with customized Debian ISO from local path (e.g., pen drive copy)
 
 set -euo pipefail
-ISO_PATH="/root/pxe/debian-secure-v1.iso"
+ISO_PATH="/root/custom-iso-download/debian-secure-v1.iso"
 PXE_IP="172.16.4.58"
 MNT_ISO="/mnt/iso"
 TFTP_DIR="/srv/tftp/debian"
